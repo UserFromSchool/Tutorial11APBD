@@ -13,7 +13,7 @@ public class HospitalService(DatabaseContext context) : IHospitalService
     
     public async Task<NewPrescriptionResponse> AddPrescription(NewPrescriptionRequest request)
     {
-        // Optimistic locking
+        await using var transaction = await _context.Database.BeginTransactionAsync();
         try
         {
             // Check medicaments' amount
@@ -29,129 +29,144 @@ public class HospitalService(DatabaseContext context) : IHospitalService
                 return new NewPrescriptionResponse { Status = 400, Message = "Incorrect dates." };
             }
 
-            // Get patient
+            // Get or create patient
             Patient patient;
-            if (!_context.Patients.Any(e => e.IdPatient == request.Patient.Id))
+            if (!await _context.Patients.AnyAsync(e => e.IdPatient == request.Patient.Id))
             {
                 patient = new Patient
                 {
-                    IdPatient = request.Patient.Id,
                     FirstName = request.Patient.FirstName,
                     LastName = request.Patient.LastName,
-                    Birthday = request.Patient.BirthDate,
-                    Prescriptions = new List<Prescription>()
+                    Birthday = request.Patient.BirthDate
                 };
                 _context.Patients.Add(patient);
+                await _context.SaveChangesAsync();
             }
             else
             {
-                patient = _context.Patients.First(e => e.IdPatient == request.Patient.Id);
+                patient = await _context.Patients.FirstAsync(e => e.IdPatient == request.Patient.Id);
             }
 
-            // Get the doctor
-            Doctor doctor;
-            if (_context.Doctors.Any(e => e.IdDoctor == request.DoctorId))
-            {
-                doctor = _context.Doctors.First(e => e.IdDoctor == request.DoctorId);
-            }
-            else
+            // Verify doctor exists
+            var doctorExists = await _context.Doctors.AnyAsync(e => e.IdDoctor == request.DoctorId);
+            if (!doctorExists)
             {
                 return new NewPrescriptionResponse { Status = 400, Message = "Doctor not found." };
             }
 
-            // Get medicaments
-            var medicaments = _context.Medicaments
-                .Where(e => request.Medicaments.Any(m => m.Id == e.IdMedicament)).ToList();
-            if (medicaments.Count != request.Medicaments.Count)
+            // Extract medicament IDs and verify they exist
+            var requestedMedicamentIds = request.Medicaments.Select(m => m.Id).ToList();
+            
+            var existingMedicamentIds = await _context.Medicaments
+                .Where(e => requestedMedicamentIds.Contains(e.IdMedicament))
+                .Select(e => e.IdMedicament)
+                .ToListAsync();
+                
+            if (existingMedicamentIds.Count != request.Medicaments.Count)
             {
-                return new NewPrescriptionResponse { Status = 400, Message = "Some medicaments not found." };
+                var missingIds = requestedMedicamentIds.Except(existingMedicamentIds);
+                return new NewPrescriptionResponse 
+                { 
+                    Status = 400, 
+                    Message = $"Medicaments not found: {string.Join(", ", missingIds)}" 
+                };
             }
 
-            // Insert new prescription
+            // Create new prescription
             var prescription = new Prescription
             {
                 Date = request.Date,
-                Doctor = doctor,
-                Patient = patient,
                 DueDate = request.DueDate,
-                PrescriptionMedicaments = new List<PrescriptionMedicament>()
+                IdDoctor = request.DoctorId,
+                IdPatient = patient.IdPatient
             };
+            
             _context.Prescriptions.Add(prescription);
-
-            // Insert medicament links
-            var medicamentsPrescriptions = medicaments.Join(request.Medicaments,
-                e => e.IdMedicament, r => r.Id,
-                (e, req) => new PrescriptionMedicament
-                {
-                    Details = req.Details,
-                    Dose = req.Dose,
-                    Medicament = e,
-                    Prescription = prescription
-                }
-            );
-            _context.PrescriptionMedicaments.AddRange(medicamentsPrescriptions);
-
-            // Save changes and return response.
             await _context.SaveChangesAsync();
-            return new NewPrescriptionResponse { Status = 200, Message = "Successfully added new prescription. " };
-        }
-        catch (DbUpdateConcurrencyException exception)
-        {
-            Console.WriteLine(exception.Message);
-            return new NewPrescriptionResponse { Status = 500, Message = "A synchronization error occured. Please try again." };
+
+            // Create prescription-medicament relationships
+            var prescriptionMedicaments = request.Medicaments.Select(requestMedicament => 
+                new PrescriptionMedicament
+                {
+                    IdPrescription = prescription.IdPrescrription,
+                    IdMedicament = requestMedicament.Id,
+                    Details = requestMedicament.Details,
+                    Dose = requestMedicament.Dose
+                }).ToList();
+            
+            _context.PrescriptionMedicaments.AddRange(prescriptionMedicaments);
+            await _context.SaveChangesAsync();
+
+            await transaction.CommitAsync();
+            _context.Patients.ToList().ForEach(p => Console.WriteLine(p.IdPatient));
+            return new NewPrescriptionResponse { Status = 200, Message = "Successfully added new prescription." };
         }
         catch (Exception exception)
         {
-            Console.WriteLine(exception.Message);
-            return new NewPrescriptionResponse{ Status = 500, Message = "Unexpected server error took place." };
+            await transaction.RollbackAsync();
+            Console.WriteLine($"Error details: {exception.Message}");
+            if (exception.InnerException != null)
+            {
+                Console.WriteLine($"Inner exception: {exception.InnerException.Message}");
+            }
+            
+            return new NewPrescriptionResponse 
+            { 
+                Status = 500, 
+                Message = $"Error occurred: {exception.Message}" 
+            };
         }
     }
 
     public async Task<GetPatientInfoResponse> GetPatientInfo(int id)
     {
-        // Optimistic locking
         try
         {
-            // Get patient info
-            if (!await _context.Patients.AnyAsync(e => e.IdPatient == id))
+            // Get patient with all related data in a single query
+            var patient = await _context.Patients
+                .Include(p => p.Prescriptions)
+                    .ThenInclude(pr => pr.Doctor)
+                .Include(p => p.Prescriptions)
+                    .ThenInclude(pr => pr.PrescriptionMedicaments)
+                    .ThenInclude(pm => pm.Medicament)
+                .FirstOrDefaultAsync(p => p.IdPatient == id);
+
+            if (patient == null)
             {
-                return new GetPatientInfoResponse{ Status = 400, Message = "Patient not found." };
+                return new GetPatientInfoResponse 
+                { 
+                    Status = 404, // Use 404 for "not found" instead of 400
+                    Message = "Patient not found." 
+                };
             }
-            var patient = await _context.Patients.FirstAsync(e => e.IdPatient == id);
 
-            // Get all the prescriptions
-            var prescriptions = _context.Prescriptions
-                .Include(e => e.PrescriptionMedicaments)
-                .ThenInclude(e => e.Medicament)
-                .Include(e => e.Doctor)
-                .Where(e => e.Patient.IdPatient == id)
-                .ToList();
-
-            var prescriptionInfo = prescriptions
-                .Select(e => new PrescriptionInfoResponse
+            // Transform to response DTOs
+            var prescriptionInfo = patient.Prescriptions
+                .Select(prescription => new PrescriptionInfoResponse
                 {
-                    Date = e.Date,
+                    Date = prescription.Date,
+                    DueDate = prescription.DueDate,
                     Doctor = new DoctorInfoResponse
                     {
-                        Id = e.Doctor.IdDoctor,
-                        Email = e.Doctor.Email,
-                        FirstName = e.Doctor.FirstName,
-                        LastName = e.Doctor.LastName
+                        Id = prescription.Doctor.IdDoctor,
+                        Email = prescription.Doctor.Email,
+                        FirstName = prescription.Doctor.FirstName,
+                        LastName = prescription.Doctor.LastName
                     },
-                    DueDate = e.DueDate,
-                    Medicaments = e.PrescriptionMedicaments.Select(e2 => new MedicamentInfoResponse
-                    {
-                        Id = e2.Medicament.IdMedicament,
-                        Description = e2.Medicament.Description,
-                        Details = e2.Details,
-                        Dose = e2.Dose
-                    }).ToList()
+                    Medicaments = prescription.PrescriptionMedicaments
+                        .Select(pm => new MedicamentInfoResponse
+                        {
+                            Id = pm.Medicament.IdMedicament,
+                            Description = pm.Medicament.Description,
+                            Details = pm.Details,
+                            Dose = pm.Dose
+                        }).ToList()
                 }).ToList();
 
             return new GetPatientInfoResponse
             {
                 Status = 200,
-                Message = "",
+                Message = "Patient found successfully.",
                 PatientInfo = new PatientInfoResponse
                 {
                     Id = patient.IdPatient,
@@ -164,8 +179,17 @@ public class HospitalService(DatabaseContext context) : IHospitalService
         }
         catch (Exception exception)
         {
-            Console.WriteLine(exception.Message);
-            return new GetPatientInfoResponse{ Status = 500, Message = "Unexpected server error took place." };
+            Console.WriteLine($"Error getting patient info: {exception.Message}");
+            if (exception.InnerException != null)
+            {
+                Console.WriteLine($"Inner exception: {exception.InnerException.Message}");
+            }
+            
+            return new GetPatientInfoResponse 
+            { 
+                Status = 500, 
+                Message = "Unexpected server error occurred." 
+            };
         }
     }
     

@@ -1,5 +1,4 @@
-﻿
-using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Mvc;
 using Tutorial11.DTOs;
 using Tutorial11.Services;
 
@@ -12,7 +11,7 @@ public class ApiController(IHospitalService service) : Controller
 
     private readonly IHospitalService _service = service;
 
-    [HttpPost("/prescriptions")]
+    [HttpPost("prescriptions")]
     public async Task<IActionResult> AddPrescription([FromBody] NewPrescriptionRequest request)
     {
         var response = await _service.AddPrescription(request);
@@ -25,7 +24,7 @@ public class ApiController(IHospitalService service) : Controller
         };
     }
 
-    [HttpGet("/patients")]
+    [HttpGet("patients")]
     public async Task<IActionResult> GetPatients(int id)
     {
         var response = await _service.GetPatientInfo(id);

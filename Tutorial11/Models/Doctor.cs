@@ -5,17 +5,17 @@ namespace Tutorial11.Models;
 public class Doctor
 {
     [Key]
-    public required int IdDoctor { get; set; }
+    public int IdDoctor { get; set; }
     
     [MaxLength(100)]
-    public required string FirstName { get; set; }
+    public string FirstName { get; set; }
     
     [MaxLength(100)]
-    public required string LastName { get; set; }
+    public string LastName { get; set; }
     
     [MaxLength(100)]
-    public required string Email { get; set; }
+    public string Email { get; set; }
     
-    public required ICollection<Prescription> Prescriptions { get; set; }
+    public ICollection<Prescription> Prescriptions { get; set; }
     
 }

@@ -6,17 +6,17 @@ public class Medicament
 {
     
     [Key]
-    public required int IdMedicament { get; set; }
+    public int IdMedicament { get; set; }
     
     [MaxLength(100)]
-    public required string Name { get; set; }
+    public string Name { get; set; }
     
     [MaxLength(100)]
-    public required string Description { get; set; }
+    public string Description { get; set; }
     
     [MaxLength(100)]
-    public required string Type { get; set; }
+    public string Type { get; set; }
     
-    public required ICollection<PrescriptionMedicament> PrescriptionMedicaments { get; set; }
+    public ICollection<PrescriptionMedicament> PrescriptionMedicaments { get; set; }
     
 }

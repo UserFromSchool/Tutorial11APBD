@@ -4,7 +4,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Tutorial11.Models;
 
-[PrimaryKey(nameof(Prescription))]
+[PrimaryKey(nameof(IdPrescription), nameof(IdMedicament))]
 public class PrescriptionMedicament
 {
     [ForeignKey(nameof(Prescription))]
